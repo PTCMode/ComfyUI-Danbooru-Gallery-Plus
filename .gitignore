@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 运行期产物
+logs/
+*.log
+settings.json
+config.json
+__pycache__/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
+temp_*

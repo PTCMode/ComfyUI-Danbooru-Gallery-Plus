@@ -1,0 +1,7 @@
+# ComfyUI Danbooru Gallery Plus —— 运行时依赖
+#
+# ComfyUI 本体已自带 torch / aiohttp / numpy / Pillow，这里只列显式用到的第三方库。
+requests>=2.28
+urllib3>=1.26
+Pillow>=9.0
+numpy>=1.24
