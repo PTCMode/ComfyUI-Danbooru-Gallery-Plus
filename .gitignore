@@ -9,6 +9,7 @@ logs/
 *.log
 settings.json
 config.json
+cache/
 __pycache__/
 
 # 虚拟环境

@@ -15,9 +15,27 @@ loggerClient.setConsoleOutput(true);
 const galleryQueuePreparers = new Map();
 let galleryQueueChain = Promise.resolve();
 
+// 切换工作流标签页时，ComfyUI 会用工作流快照重建节点，DOM 里的搜索词、已加载列表
+// 与滚动位置都会丢。这里按「工作流 + 节点 id」留一份内存快照，切回来时恢复。
+const gallerySessionStates = new Map();
+const GALLERY_SESSION_LIMIT = 8;
+// loadGraphData 期间 activeWorkflow 还是上一个工作流，节点创建时靠它判断归属
+let loadingWorkflowKey = "";
+
 app.registerExtension({
     name: "Comfy.DanbooruGallery",
     async setup() {
+        if (typeof app.loadGraphData === "function") {
+            const originalLoadGraphData = app.loadGraphData;
+            app.loadGraphData = function (graphData, ...rest) {
+                const target = rest[2];
+                loadingWorkflowKey = String(
+                    (typeof target === "string" ? target : target?.path) || ""
+                );
+                return originalLoadGraphData.call(this, graphData, ...rest);
+            };
+        }
+
         const originalQueuePrompt = app.queuePrompt;
         app.queuePrompt = function (...args) {
             const queuedRun = galleryQueueChain.then(async () => {
@@ -95,31 +113,22 @@ app.registerExtension({
                 // 完整的提示词与图片地址放在后端内存里，避免长字符串被前端扩展清洗/截断。
                 let currentQueueToken = "";
 
-                // 创建隐藏的 selection_data widget
-                const selectionWidget = this.addWidget("text", "selection_data", JSON.stringify({ selections: [] }), () => { }, {
-                    serialize: true // 确保序列化
-                });
+                // 隐藏的数据 widget：值随工作流保存（selection_data / filter_data / search_query）
+                const addHiddenWidget = (name, defaultValue) => {
+                    const widget = this.addWidget("text", name, defaultValue, () => { }, {
+                        serialize: true // 确保序列化
+                    });
+                    if (widget) {
+                        widget.computeSize = () => [0, -4]; // 返回0宽度和负高度来隐藏
+                        widget.draw = () => { }; // 覆盖draw方法，不绘制任何内容
+                        widget.type = "hidden"; // 设置为隐藏类型
+                        Object.defineProperty(widget, 'hidden', { value: true, writable: false }); // 标记为隐藏
+                    }
+                    return widget;
+                };
 
-                // 确保widget不可见
-                if (selectionWidget) {
-                    selectionWidget.computeSize = () => [0, -4]; // 返回0宽度和负高度来隐藏
-                    selectionWidget.draw = () => { }; // 覆盖draw方法，不绘制任何内容
-                    selectionWidget.type = "hidden"; // 设置为隐藏类型
-                    Object.defineProperty(selectionWidget, 'hidden', { value: true, writable: false }); // 标记为隐藏
-                }
-
-                // 创建隐藏的 filter_data widget
-                const filterWidget = this.addWidget("text", "filter_data", JSON.stringify({ startTime: null, endTime: null, startPage: null }), () => { }, {
-                    serialize: true // 确保序列化
-                });
-
-                // 确保widget不可见
-                if (filterWidget) {
-                    filterWidget.computeSize = () => [0, -4];
-                    filterWidget.draw = () => { };
-                    filterWidget.type = "hidden";
-                    Object.defineProperty(filterWidget, 'hidden', { value: true, writable: false });
-                }
+                const selectionWidget = addHiddenWidget("selection_data", JSON.stringify({ selections: [] }));
+                const filterWidget = addHiddenWidget("filter_data", JSON.stringify({ startTime: null, endTime: null, startPage: null }));
 
                 // 读取 widget 里的选择数据（容错：即使被别的扩展截断，也要尽量取出 token）
                 const readSelectionPayload = () => {
@@ -200,11 +209,6 @@ app.registerExtension({
                     }
                 };
                 this.__danbooruRestoreSelection = restoreSelectionState;
-                this.__danbooruSelectionInfo = () => ({
-                    nodeInstanceId,
-                    count: selectedEntries.size,
-                    token: currentQueueToken,
-                });
 
                 const container = $el("div.danbooru-gallery");
                 container.style.boxSizing = "border-box";
@@ -426,6 +430,18 @@ app.registerExtension({
                     onDraw: () => { }
                 });
 
+                // 搜索词随工作流保存。放在最后添加，已有工作流的 widgets_values 索引不受影响。
+                const searchWidget = addHiddenWidget("search_query", "");
+                let lastPersistedSearch = null;
+                const persistSearchToWidget = () => {
+                    if (!searchWidget) return;
+                    const value = searchInput.value;
+                    if (value === lastPersistedSearch) return;
+                    lastPersistedSearch = value;
+                    searchWidget.value = value;
+                    searchWidget.callback?.();
+                };
+
 
                 // 确保在 widget 渲染后调整大小
                 setTimeout(() => {
@@ -465,6 +481,113 @@ app.registerExtension({
                     return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : fallback;
                 };
                 let temporaryTagEdits = {}; // Keyed by post.id
+
+                // ===== 会话状态：切换工作流标签页后恢复搜索词与浏览位置 =====
+                // 用「工作流路径 + 节点 id」做键。路径优先取 loadGraphData 的目标：
+                // 节点创建时 activeWorkflow 还没切换过来，直接读它会拿到上一个工作流。
+                const getSessionStateKey = () => {
+                    const workflow = app?.extensionManager?.workflow?.activeWorkflow;
+                    const workflowKey = loadingWorkflowKey || workflow?.path || workflow?.key || "unsaved-workflow";
+                    return `${workflowKey}::${nodeInstance.id}`;
+                };
+
+                const saveSessionState = (allowEmpty = false) => {
+                    try {
+                        // 首屏还没加载完时的空列表不要覆盖上一次的快照
+                        if (posts.length === 0 && !allowEmpty) {
+                            return;
+                        }
+                        gallerySessionStates.set(getSessionStateKey(), {
+                            sourceSite: uiSettings.source_site || "danbooru",
+                            search: searchInput.value,
+                            posts: posts.slice(),
+                            postPages: posts.map(post => postGalleryPages.get(post) ?? null),
+                            temporaryTagEdits: { ...temporaryTagEdits },
+                            currentTags,
+                            lastPostId,
+                            seenPostIds: Array.from(seenPostIds),
+                            currentPage,
+                            currentVisiblePage,
+                            pageWindowStart,
+                            endOfResults,
+                            scrollTop: imageGrid.scrollTop,
+                        });
+                        while (gallerySessionStates.size > GALLERY_SESSION_LIMIT) {
+                            gallerySessionStates.delete(gallerySessionStates.keys().next().value);
+                        }
+                    } catch (error) {
+                        logger.warn(`[session] 保存浏览状态失败: ${error?.message || error}`);
+                    }
+                };
+
+                let sessionSaveTimer = null;
+                const scheduleSessionSave = (delay = 600) => {
+                    clearTimeout(sessionSaveTimer);
+                    sessionSaveTimer = setTimeout(() => {
+                        persistSearchToWidget();
+                        saveSessionState();
+                    }, delay);
+                };
+
+                const restoreSessionState = () => {
+                    const state = gallerySessionStates.get(getSessionStateKey());
+                    if (!state || !Array.isArray(state.posts) || state.posts.length === 0) {
+                        return false;
+                    }
+                    // 站点换过就别套用旧列表
+                    if ((state.sourceSite || "danbooru") !== (uiSettings.source_site || "danbooru")) {
+                        return false;
+                    }
+
+                    searchInput.value = state.search || "";
+                    previousSearchValue = searchInput.value.trim();
+                    handleSearchInput();
+
+                    posts = state.posts.slice();
+                    temporaryTagEdits = state.temporaryTagEdits || {};
+                    currentTags = state.currentTags || "";
+                    lastPostId = state.lastPostId ?? null;
+                    pageWindowStart = normalizePageNumber(state.pageWindowStart, 1);
+                    currentPage = normalizePageNumber(state.currentPage, pageWindowStart);
+                    currentVisiblePage = normalizePageNumber(state.currentVisiblePage, pageWindowStart);
+                    endOfResults = Boolean(state.endOfResults);
+                    seenPostIds.clear();
+                    for (const id of state.seenPostIds || []) {
+                        seenPostIds.add(id);
+                    }
+
+                    imageGrid.innerHTML = "";
+                    posts.forEach((post, index) => {
+                        const page = state.postPages?.[index] ?? currentVisiblePage;
+                        const element = createPostElement(post, page);
+                        if (element) {
+                            imageGrid.appendChild(element);
+                        }
+                    });
+                    resizeGrid();
+                    updatePaginationControls();
+
+                    const applyScroll = () => {
+                        imageGrid.scrollTop = state.scrollTop || 0;
+                        updateCurrentPageIndicator();
+                    };
+                    // 卡片高度在 resizeGrid 之后才稳定，缩略图加载完再补一次
+                    requestAnimationFrame(() => {
+                        applyScroll();
+                        setTimeout(() => {
+                            applyScroll();
+                            // 停在底部附近时继续补货，避免恢复后要手动滚一下才开始加载
+                            maybeLoadMore();
+                        }, 300);
+                    });
+                    return true;
+                };
+
+                // 节点被移除时兜底落盘（切标签页不一定会走到这里，属于保险）
+                this.__danbooruFlushSession = () => {
+                    persistSearchToWidget();
+                    saveSessionState();
+                };
 
                 // 用户认证管理功能
                 const loadUserAuth = async () => {
@@ -3334,6 +3457,9 @@ app.registerExtension({
                         const indicator = imageGrid.querySelector('.danbooru-loading');
                         if (indicator) indicator.remove();
                         updateCurrentPageIndicator();
+                        // 每次搜索/翻页都同步：搜索词写进工作流，顺便留会话快照
+                        persistSearchToWidget();
+                        saveSessionState(true);
                         // 每次加载完成后检查是否需要补充更多（maybeLoadMore）
                         if (!endOfResults && !parseFailed) {
                             logger.info(`[fetchAndRender] finally → 调用maybeLoadMore`);
@@ -4697,13 +4823,17 @@ app.registerExtension({
 
                     // Debounced scroll logic for page indicator
                     clearTimeout(scrollTimeout);
-                    scrollTimeout = setTimeout(updateCurrentPageIndicator, 150);
+                    scrollTimeout = setTimeout(() => {
+                        updateCurrentPageIndicator();
+                        saveSessionState();
+                    }, 150);
                 });
 
                 searchInput.addEventListener("keydown", (e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                         // 单行输入习惯：Enter 直接搜索，Shift+Enter 换行
                         e.preventDefault();
+                        persistSearchToWidget();
                         fetchAndRender(true);
                     }
                 });
@@ -4786,6 +4916,8 @@ app.registerExtension({
                         fetchAndRender(true); // 清空搜索框时自动刷新
                     }
                     previousSearchValue = currentValue;
+                    // 还没按回车就切走时，也把输入内容记下来
+                    scheduleSessionSave();
                     updateRankingButtonState();
                     updateFavoritesButtonState();
 
@@ -4796,6 +4928,11 @@ app.registerExtension({
                 };
 
                 searchInput.addEventListener("input", handleSearchInput);
+                // 失焦时立刻落盘：刚输入就切标签页时，最后几个字符也不会丢
+                searchInput.addEventListener("blur", () => {
+                    persistSearchToWidget();
+                    scheduleSessionSave(0);
+                });
 
                 // 收藏夹按钮点击事件
                 favoritesButton.addEventListener("click", async () => {
@@ -5163,10 +5300,6 @@ app.registerExtension({
                             filterButton.classList.remove('active');
                         }
 
-                        // 页面加载时直接获取第一页的帖子（先同步 currentTags，否则重置块会因 '' !== 搜索值而清空锚点）
-                        currentTags = searchInput.value.trim();
-                        logger.info(`[init] 开始首次加载: src=${uiSettings.source_site || "danbooru"} dedup=${uiSettings.gelbooru_dedup_mode || "off"} preload=${uiSettings.preload_count || 40} tags="${currentTags}"`);
-
                         // 载入工作流时 widget 值可能比本函数更早恢复：先同步一次选中态，
                         // 这样首屏渲染出来的卡片就直接带 .selected 高亮。
                         try {
@@ -5175,7 +5308,26 @@ app.registerExtension({
                             logger.warn(`[Selection] 初始化时恢复选中态失败: ${restoreError?.message || restoreError}`);
                         }
 
-                        fetchAndRender(true);
+                        // 搜索词随工作流保存：先填回输入框（有会话快照时以快照里的为准）
+                        if (searchWidget) {
+                            lastPersistedSearch = String(searchWidget.value ?? "");
+                            if (lastPersistedSearch) {
+                                searchInput.value = lastPersistedSearch;
+                                previousSearchValue = lastPersistedSearch.trim();
+                                handleSearchInput();
+                            }
+                        }
+
+                        // 切回同一个工作流标签页时，恢复上次的搜索词 / 已加载列表 / 滚动位置；
+                        // 没有可恢复状态时才去拉第一页。
+                        if (restoreSessionState()) {
+                            logger.info(`[session] 已恢复浏览状态: posts=${posts.length} page=${currentVisiblePage} scrollTop=${imageGrid.scrollTop}`);
+                        } else {
+                            // 先同步 currentTags，否则重置块会因 '' !== 搜索值而清空锚点
+                            currentTags = searchInput.value.trim();
+                            logger.info(`[init] 开始首次加载: src=${uiSettings.source_site || "danbooru"} dedup=${uiSettings.gelbooru_dedup_mode || "off"} preload=${uiSettings.preload_count || 40} tags="${currentTags}"`);
+                            fetchAndRender(true);
+                        }
 
                     } catch (error) {
                         logger.error("Danbooru Gallery initialization failed:", error);
@@ -5257,6 +5409,7 @@ app.registerExtension({
             const onRemoved = nodeType.prototype.onRemoved;
             nodeType.prototype.onRemoved = function () {
                 galleryQueuePreparers.delete(this);
+                this.__danbooruFlushSession?.();
                 // 移除所有可能由该节点创建的全局UI元素
                 const elementsToRemove = document.querySelectorAll(
                     ".danbooru-settings-dialog, .danbooru-edit-panel, .danbooru-tag-tooltip, .danbooru-tag-context-menu, .danbooru-toast"
