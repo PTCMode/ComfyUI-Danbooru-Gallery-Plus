@@ -20,7 +20,7 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 # 插件版本（与 pyproject.toml 保持一致）
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # 导入节点映射（同时完成 /danbooru_gallery/* 路由注册）
 from .danbooru_gallery import (  # noqa: E402

@@ -25,7 +25,8 @@
 - **中文翻译**：内置 D 站词条中文对照（`zh_cn/`），支持中英双语界面
 - **双站点**：Danbooru（含游标分页、详情按需拉取）与 Gelbooru（DAPI + 公开页兜底、防重复）
 - **日志设置**：设置面板里可开关日志、调级别、决定是否输出到终端
-- **搜索词条上限可配置**：默认 2，付费账号可调高；`score:` 等限定词不占名额
+- **搜索词条上限可配置**：匿名默认 2、登录 Danbooru 账号可填 3；`score:` 等限定词不占名额
+- **截断提示**：搜索词真的超限被忽略时，搜索框下方会显示本次词条数、上限和被忽略的词；没截断就不显示
 - **状态保留**：搜索词随工作流保存（重开工作流也能还原）；切换工作流标签页再切回来，已加载列表和滚动位置也会还原
 - **标签补全**：本插件只把输入框做成原生 `textarea`，补全交给这类全局扩展，不自带补全
 
@@ -52,7 +53,7 @@ pip install -r ComfyUI-Danbooru-Gallery-Plus/requirements.txt
 
 `节点右键 → 设置`（或节点右下角齿轮）：
 
-- **用户**：Danbooru 用户名 / API Key，Gelbooru User ID / API Key（不填也能用，但站点限流更严）
+- **用户**：Danbooru 用户名 / API Key，Gelbooru User ID / API Key（不填也能用，但站点限流更严、Danbooru 只能搜 2 个词）
 - **提示词**：输出哪些标签类别、过滤哪些词、单次搜索最多词条数
 - **界面**：悬浮提示、多选模式
 - **预加载**：预读张数、G 站防重复模式
@@ -61,7 +62,8 @@ pip install -r ComfyUI-Danbooru-Gallery-Plus/requirements.txt
 ## 已知限制
 
 - 未配置 Danbooru 账号时是匿名访问，站点限制**一次最多 2 个搜索词**；
-  付费账号可在 `设置 → 提示词 → 单次搜索最多词条数` 调高。
+  填了用户名 + API Key 后按登录账号算（普通会员 3 个），可在
+  `设置 → 提示词 → 单次搜索最多词条数` 调整。
 
 - 图片下载失败时为该张输出 1×1 占位图，并在日志里记录原因（不影响其它张）。
 
@@ -72,8 +74,10 @@ pip install -r ComfyUI-Danbooru-Gallery-Plus/requirements.txt
 
 - **搜索时报 422 `PostQuery::TagLimitError`？**
 
-  搜索词条数超了账号上限。把 `设置 → 提示词 → 单次搜索最多词条数` 调小；
-`score:` `rating:` `status:` `id:` `date:` 这类限定词不占名额，但 `order:` `sort:` `user:` 会占。
+  搜索词条数超了账号上限。匿名最多 2 个，填了 Danbooru 用户名 + API Key 后为 3 个；
+  超出时后端会自动降级到上限（多余词条被忽略），也可以把
+  `设置 → 提示词 → 单次搜索最多词条数` 调小。
+  `score:` `rating:` `status:` `id:` `date:` 这类限定词不占名额，但 `order:` `sort:` `user:` 会占。
 
 - **图片一直是 1×1？**
 
@@ -91,6 +95,10 @@ pip install -r ComfyUI-Danbooru-Gallery-Plus/requirements.txt
 ## License
 
 [MIT](LICENSE) © 2026 **PTCMode**（包含上游 Aaalice233 的 MIT 声明）
+
+## 开发文档
+
+项目的目录结构、各文件职责、数据流与开发约定见 [AGENT.md](AGENT.md)。
 
 ## 更新日志
 

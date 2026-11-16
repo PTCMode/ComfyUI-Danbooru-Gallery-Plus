@@ -45,7 +45,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 REDACTED_QUERY_KEYS = {"api_key", "key", "login", "password", "token", "user_id"}
 
 # Danbooru / Gelbooru 的限定词（metatag）形如 score:>10、order:rank、rating:g、id:<X。
-# 这些不占用“免费账号最多 2 个标签”的名额。
+# 这些不占用“每账号最多 N 个标签”（匿名 2、登录会员 3）的名额。
 # Danbooru / Gelbooru 的限定词（metatag）形如 score:>10、order:rank、rating:g、id:<X。
 QUALIFIER_TAG_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):")
 
@@ -98,6 +98,45 @@ def build_query_tags(tags, max_tags, exempt_prefixes=DANBOORU_TAG_LIMIT_EXEMPT):
         final_tags = f"{final_tags} {date_tag}".strip()
     return final_tags, dropped_tags
 
+
+def count_counted_tags(tags, exempt_prefixes=DANBOORU_TAG_LIMIT_EXEMPT):
+    """统计真正占用“每账号最多 N 个词”名额的词条数（不含 date: 与免费限定词）。"""
+    total = 0
+    for raw_tag in str(tags or '').split(' '):
+        token = raw_tag.strip()
+        if not token or token.startswith('date:'):
+            continue
+        prefix_match = QUALIFIER_TAG_RE.match(token)
+        if prefix_match and prefix_match.group(1).lower() in exempt_prefixes:
+            continue
+        total += 1
+    return total
+
+# Danbooru 的账号词条上限（2026-11 实测）：
+#   匿名 2 个；普通会员（level 20，带 API Key）3 个；更高等级账号更多。
+# 超限时站点返回 422 TagLimitError，message 里带着本次的真实上限，可直接解析。
+DANBOORU_ANONYMOUS_TAG_LIMIT = 2
+DANBOORU_TAG_LIMIT_ERROR_RE = re.compile(r"more than\s+(\d+)\s+tags", re.IGNORECASE)
+
+
+def parse_danbooru_tag_limit(response):
+    """从 Danbooru 的 422 TagLimitError 中解析账号实际允许的词条数。"""
+    if response is None or getattr(response, "status_code", None) != 422:
+        return None
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or "TagLimitError" not in str(payload.get("error", "")):
+        return None
+    match = DANBOORU_TAG_LIMIT_ERROR_RE.search(str(payload.get("message", "")))
+    if not match:
+        return None
+    try:
+        return max(1, int(match.group(1)))
+    except (TypeError, ValueError):
+        return None
+
 HTTP_STATUS_HINTS = {
     400: ("请求参数不太对", "检查标签、页码或筛选条件是否包含站点不支持的写法。"),
     401: ("认证失败", "检查 User ID、用户名或 API Key 是否填错，必要时重新生成 API Key。"),
@@ -105,7 +144,7 @@ HTTP_STATUS_HINTS = {
     404: ("资源不存在", "图片、收藏记录或接口路径可能已经不存在。"),
     408: ("请求超时", "网络太慢或站点没有及时响应，可以稍后重试。"),
     409: ("请求冲突", "资源状态可能已经改变，刷新后再试一次。"),
-    422: ("站点拒绝了这次操作", "常见原因：搜索词条数超过账号上限（Danbooru 免费账号 2 个，可在节点设置 → 提示词里调低）、重复收藏、或标签参数无效。"),
+    422: ("站点拒绝了这次操作", "常见原因：搜索词条数超过账号上限（Danbooru 匿名 2 个、登录账号 3 个；没填用户名/API Key 时按匿名处理，可在节点设置 → 提示词里调低）、重复收藏、或标签参数无效。"),
     423: ("资源被锁定", "站点暂时不允许修改该资源。"),
     425: ("请求过早", "稍等几秒再试，避免站点把请求判定为异常。"),
     429: ("请求过于频繁", "已经触发限流，请降低刷新/翻页速度，等一会儿再试。"),
@@ -197,6 +236,16 @@ def build_gallery_error_payload(source, action, exc=None, response=None, message
         "response_excerpt": _response_excerpt(response),
     }
 
+    suggestions = [
+        "稍等 30-120 秒后重试，避免连续刷新触发限流。",
+        "确认代理/网络可以直接打开对应站点页面。",
+        "如果使用收藏或私有内容，重新检查 User ID/API Key 是否正确。",
+    ]
+    if status_code == 422 and site_name == "Danbooru":
+        suggestions.insert(0, "搜索词超过账号上限：匿名 2 个、登录账号 3 个。到 设置 → 用户 填好 Danbooru 用户名 + API Key，或把 设置 → 提示词 → 单次搜索最多词条数 调小。")
+    elif status_code == 401 and site_name == "Danbooru":
+        suggestions.insert(0, "API Key 无效：到 设置 → 用户 重新填写 Danbooru 用户名与 API Key（可在 danbooru.donmai.us/profile 查看或重置）。")
+
     return {
         "error": summary,
         "error_info": {
@@ -207,11 +256,7 @@ def build_gallery_error_payload(source, action, exc=None, response=None, message
                 "如果只有 Gelbooru 经常失败，可能与当前 IP 信誉、地区网络或站点反爬策略有关。",
                 "如果 Danbooru/Gelbooru 都失败，优先检查本机网络、代理软件、DNS 和防火墙。",
             ],
-            "suggestions": [
-                "稍等 30-120 秒后重试，避免连续刷新触发限流。",
-                "确认代理/网络可以直接打开对应站点页面。",
-                "如果使用收藏或私有内容，重新检查 User ID/API Key 是否正确。",
-            ],
+            "suggestions": suggestions,
             "tip": "看不懂也没关系，把详情复制给 AI 问问。它很擅长把这些小刺猬一样的报错梳顺。",
             "details": details,
         },
@@ -363,6 +408,19 @@ def has_required_site_credentials(adapter, credentials):
     if adapter.key == "gelbooru":
         return bool(credentials.get("user_id") and credentials.get("api_key"))
     return True
+
+def build_site_auth(adapter):
+    """返回本次请求要携带的 HTTP Basic Auth（Danbooru 用 username + API Key）。
+
+    注意：不能再用 `adapter.requires_auth` 当开关——它表示“没有凭据就无法工作”，
+    Danbooru 匿名也能搜索，所以旧写法会让登录账号的搜索请求一直按匿名发出，
+    站点于是只允许 2 个词条，第 3 个词必然 422。只要填了用户名 + API Key 就必须带上。
+    """
+    if adapter.key == "danbooru":
+        username, api_key = load_user_auth()
+        if username and api_key:
+            return HTTPBasicAuth(username, api_key)
+    return None
 
 def load_favorites():
     """从统一设置文件加载收藏列表"""
@@ -1597,6 +1655,8 @@ async def get_posts_for_front(request):
     # loop so settings/favorites calls and a newly selected source stay
     # responsive while an older upstream request is still finishing.
     loop = asyncio.get_running_loop()
+    # 词条被截断时由 get_posts_internal 写入，下面通过响应头告诉前端弹提示
+    notice = {}
     posts_json_str, = await loop.run_in_executor(
         None,
         partial(
@@ -1610,6 +1670,7 @@ async def get_posts_for_front(request):
             force_public_detail=force_public_detail,
             before_id=before_id_raw,
             gelbooru_dedup_mode=gelbooru_dedup_mode,
+            _notice=notice,
         ),
     )
     
@@ -1618,11 +1679,28 @@ async def get_posts_for_front(request):
     except json.JSONDecodeError:
         posts_list = []
 
-    return web.json_response(posts_list, headers={
+    headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
-        "Expires": "0"
-    })
+        "Expires": "0",
+    }
+    if notice.get("truncated"):
+        # 头只能是 latin-1：百分号编码 UTF-8，前端 decodeURIComponent 还原。
+        # 只带前 8 个词（每个最多 60 字）避免超长头，完整数量放在 dropped_count。
+        dropped_all = [str(tag) for tag in (notice.get("dropped") or [])]
+        packed = {
+            "truncated": True,
+            "limit": notice.get("limit"),
+            "total": notice.get("total"),
+            "dropped": [tag[:60] for tag in dropped_all[:8]],
+            "dropped_count": len(dropped_all),
+            "source": notice.get("source"),
+        }
+        headers["X-Gallery-Tag-Notice"] = urllib.parse.quote(
+            json.dumps(packed, ensure_ascii=False), safe=""
+        )
+
+    return web.json_response(posts_list, headers=headers)
 
 @PromptServer.instance.routes.get("/danbooru_gallery/log_config")
 async def get_log_config_route(request):
@@ -1944,7 +2022,8 @@ class DanbooruGalleryNode:
         if not post_id.isdigit():
             return None
         try:
-            result_text = cls.get_posts_internal(
+            # get_posts_internal 返回 1 元组，之前忘了解包，导致这条兜底路径一直静默失败
+            result_text, = cls.get_posts_internal(
                 f"id:{post_id}",
                 1,
                 1,
@@ -2121,7 +2200,11 @@ class DanbooruGalleryNode:
             return ([placeholder], [""])
     
     @staticmethod
-    def get_posts_internal(tags: str, limit: int = 100, page: int = 1, rating: str = None, source: str = "danbooru", gelbooru_display_all_site_content: bool = None, force_public_detail: bool = False, before_id=None, gelbooru_dedup_mode: str = "off"):
+    def get_posts_internal(tags: str, limit: int = 100, page: int = 1, rating: str = None, source: str = "danbooru", gelbooru_display_all_site_content: bool = None, force_public_detail: bool = False, before_id=None, gelbooru_dedup_mode: str = "off", _notice: dict = None):
+        """取帖子列表。_notice 是可选出参：发生词条截断时会被写入
+        {"truncated": True, "limit": N, "dropped": [...], "source": "danbooru"}，
+        由 /danbooru_gallery/posts 路由通过响应头转给前端提示；节点执行路径不需要它。
+        """
         settings = load_settings()
         cache_enabled = settings.get("cache_enabled", True)
         max_cache_age = settings.get("max_cache_age", 3600)
@@ -2147,6 +2230,9 @@ class DanbooruGalleryNode:
 
         credentials = get_site_credentials(adapter)
         has_gelbooru_creds = has_required_site_credentials(adapter, credentials)
+        # Danbooru 的登录态必须随每次搜索请求发出（Basic Auth），否则站点按匿名处理。
+        danbooru_auth = build_site_auth(adapter)
+        raw_tags = str(tags or "").strip()
         persistent_cache = get_gallery_post_cache() if adapter.key == "gelbooru" and cache_enabled else None
         persistent_source = (
             "gelbooru:display_all" if gelbooru_display_all_site_content else "gelbooru:default"
@@ -2177,8 +2263,18 @@ class DanbooruGalleryNode:
                 logger.warning(f"[GelbooruCache] 本地分类/缓存读取失败，回退原始列表: {exc}")
                 return posts
 
-        # 单次搜索的词条数上限：来自设置（默认 2，付费账号可调高）
+        # 单次搜索的词条数上限：来自设置（默认 2，登录账号可调高）
         max_tags = clamp_max_search_tags(settings.get("max_search_tags", 2))
+        # Danbooru 匿名只能搜 2 个词，第 3 个词会直接 422；没配密钥时先把上限压到 2，
+        # 配了用户名 + API Key（登录态）才允许按设置放宽（普通会员 3 个）。
+        if adapter.key == "danbooru" and danbooru_auth is None:
+            if max_tags > DANBOORU_ANONYMOUS_TAG_LIMIT:
+                logger.warning(
+                    "[danbooru] 未配置 Danbooru 用户名/API Key，匿名搜索最多 %s 个词，"
+                    "已把上限从 %s 降到 %s（登录后可搜 3 个）",
+                    DANBOORU_ANONYMOUS_TAG_LIMIT, max_tags, DANBOORU_ANONYMOUS_TAG_LIMIT,
+                )
+            max_tags = min(max_tags, DANBOORU_ANONYMOUS_TAG_LIMIT)
         # Gelbooru cursor 模式（追加 id:<X）在站点侧仍占一个名额，匿名访问只有 2 个，
         # 所以未配置密钥时把上限压到 1；配置了密钥的账号放宽（沿用旧上限 10）。
         if adapter.key == "gelbooru" and gelbooru_dedup_mode in ("on", "on_auth"):
@@ -2186,6 +2282,28 @@ class DanbooruGalleryNode:
                 max_tags = min(max_tags, 10)
             else:
                 max_tags = min(max_tags, 1)
+        # Danbooru 有实测的“免费限定词”清单；Gelbooru 保守处理，只豁免 date:
+        exempt_prefixes = DANBOORU_TAG_LIMIT_EXEMPT if adapter.key == "danbooru" else frozenset()
+        # 词条截断是纯计算，放在缓存检查之前，保证缓存命中也把“被忽略的词”报给前端。
+        final_tags, dropped_tags = build_query_tags(tags, max_tags, exempt_prefixes)
+
+        def report_truncation(limit_value, dropped):
+            """把“实际被截断的词”写进 _notice，供前端弹出一次性提示。"""
+            if not isinstance(_notice, dict) or not dropped:
+                return
+            merged = list(dict.fromkeys([*(_notice.get("dropped") or []), *dropped]))
+            _notice.update({
+                "truncated": True,
+                "limit": limit_value,
+                # 本次搜索真正占名额的词条总数（含 order:rank 这类限定词），
+                # 让提示能说明“你给了 4 个、账号只允许 3 个”，避免提示语焉不详
+                "total": count_counted_tags(raw_tags, exempt_prefixes),
+                "dropped": merged,
+                "source": adapter.key,
+            })
+
+        report_truncation(max_tags, dropped_tags)
+
         # 创建缓存键（rating一化排序，避免不同排序命中两条缓存）
         rating_key = ','.join(sorted(r.strip().lower() for r in (rating or '').split(',') if r.strip()))
         site_options_key = ""
@@ -2210,10 +2328,6 @@ class DanbooruGalleryNode:
                         pass
                 return (cached_data,)
 
-
-        # Danbooru 有实测的“免费限定词”清单；Gelbooru 保守处理，只豁免 date:
-        exempt_prefixes = DANBOORU_TAG_LIMIT_EXEMPT if adapter.key == "danbooru" else frozenset()
-        final_tags, dropped_tags = build_query_tags(tags, max_tags, exempt_prefixes)
         if dropped_tags:
             logger.info(
                 "[%s] 最多 %s 个搜索词，已忽略: %s"
@@ -2239,8 +2353,7 @@ class DanbooruGalleryNode:
         if before_id and adapter.key == "gelbooru":
             tags = f"{tags} id:<{before_id}".strip()
 
-        username, api_key = load_user_auth()
-        auth = HTTPBasicAuth(username, api_key) if adapter.requires_auth and username and api_key else None
+        auth = danbooru_auth if adapter.key == "danbooru" else None
         if adapter.key == "gelbooru" and force_public_detail:
             def is_queue_ready_detail(post):
                 return bool(
@@ -2314,6 +2427,27 @@ class DanbooruGalleryNode:
                 response = _gelbooru_request("GET", adapter.posts_url, request_kind="api", params=params, timeout=15)
             else:
                 response = _danbooru_request("GET", adapter.posts_url, params=params, auth=auth, timeout=15)
+                # 账号真实上限比设置低时会 422 TagLimitError：从响应里读出上限并自动降级重试一次，
+                # 避免前端对同一个必然失败的请求反复重试（表现为“无限重试”）。
+                server_tag_limit = parse_danbooru_tag_limit(response)
+                if server_tag_limit and server_tag_limit < max_tags:
+                    logger.warning(
+                        "[danbooru] 站点提示本次最多 %s 个搜索词（当前上限 %s），已自动降级后重试",
+                        server_tag_limit, max_tags,
+                    )
+                    retry_tags, retry_dropped = build_query_tags(raw_tags, server_tag_limit, exempt_prefixes)
+                    # 站点上限造成的额外截断也要让用户看到，而不是只写日志
+                    report_truncation(server_tag_limit, retry_dropped)
+                    if retry_dropped:
+                        logger.info(
+                            "[danbooru] 按站点上限 %s 再次忽略: %s",
+                            server_tag_limit, ' '.join(retry_dropped),
+                        )
+                    params = adapter.build_posts_params(retry_tags, limit, page, rating_query)
+                    params = adapter.apply_auth_params(params, credentials)
+                    if before_id:
+                        params["page"] = f"b{before_id}"
+                    response = _danbooru_request("GET", adapter.posts_url, params=params, auth=auth, timeout=15)
             if response.status_code == 401 and adapter.key == "gelbooru":
                 logger.warning("[Gelbooru] DAPI 返回 401，改用公开网页解析模式")
                 posts = _fetch_gelbooru_public_posts(adapter, tags, limit, page, rating_query, gelbooru_display_all_site_content)

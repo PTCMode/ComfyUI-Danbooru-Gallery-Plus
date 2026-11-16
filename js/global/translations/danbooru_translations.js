@@ -6,7 +6,7 @@
 export const danbooruTranslations = {
     zh: {
         // 搜索和控制
-        searchPlaceholder: "Tags (最多2个, 例如: 1girl, blue_eyes) - 第三个及后续tag将被忽略...",
+        searchPlaceholder: "Tags (匿名最多2个、登录3个, 例如: 1girl, blue_eyes) - 超出部分会被忽略...",
         categories: "类别",
         formatting: "格式",
         all: "全部",
@@ -69,6 +69,8 @@ export const danbooruTranslations = {
         // 状态信息
         loading: "加载中...",
         noResults: "未找到结果",
+        tagsTruncated: "搜索词最多 {limit} 个（本次 {total} 个），已忽略：{tags}",
+        tagsTruncatedMore: "{tags} …（共 {count} 个）",
 
         // 黑名单对话框
         blacklistTitle: "黑名单设置",
@@ -156,7 +158,7 @@ export const danbooruTranslations = {
     },
     en: {
         // 搜索和控制
-        searchPlaceholder: "Tags (Max 2, e.g., 1girl, blue_eyes) - Third and subsequent tags will be ignored...",
+        searchPlaceholder: "Tags (2 anonymous, 3 with login; e.g. 1girl, blue_eyes) - extra tags will be ignored...",
         categories: "Categories",
         formatting: "Formatting",
         all: "ALL",
@@ -219,6 +221,8 @@ export const danbooruTranslations = {
         // 状态信息
         loading: "Loading...",
         noResults: "No results found.",
+        tagsTruncated: "Only {limit} search tags allowed (you sent {total}), ignored: {tags}",
+        tagsTruncatedMore: "{tags} … ({count} total)",
 
         // 黑名单对话框
         blacklistTitle: "Blacklist Settings",

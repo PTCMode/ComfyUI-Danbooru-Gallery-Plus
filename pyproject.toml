@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-danbooru-gallery-plus"
-version = "1.0.0"
+version = "1.0.1"
 description = "ComfyUI 单节点插件：在节点内浏览 Danbooru / Gelbooru，输出选中图片与提示词"
 readme = "README.md"
 authors = [{ name = "PTCMode" }]

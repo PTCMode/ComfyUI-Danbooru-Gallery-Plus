@@ -1730,7 +1730,7 @@ app.registerExtension({
                     filterSection.appendChild(filterDescription);
                     filterSection.appendChild(filterTextarea);
 
-                    // 单次搜索最多词条数（D 站免费账号 2，付费账号更高）
+                    // 单次搜索最多词条数（D 站匿名 2 个，登录账号 3 个）
                     const maxSearchTagsInput = $el("input", {
                         type: "number",
                         id: "maxSearchTagsInput",
@@ -1751,7 +1751,7 @@ app.registerExtension({
                         maxSearchTagsInput,
                     ]);
                     const maxSearchTagsHint = $el("p", {
-                        textContent: "默认 2（D站免费账号上限）。付费账号可调高；score:/rating:/status:/id: 等限定词不占这个名额，order:/sort:/user: 会占。",
+                        textContent: "默认 2（D站匿名上限）；填了用户名 + API Key 后登录态可填 3（普通会员上限），超出会被站点拒绝。score:/rating:/status:/id: 等限定词不占这个名额，order:/sort:/user: 会占。",
                         style: { margin: "6px 0 0 0", color: "#888", fontSize: "0.85em" }
                     });
                     filterSection.appendChild(maxSearchTagsDiv);
@@ -3243,20 +3243,6 @@ app.registerExtension({
                     let parseFailed = false;
                     try {
                         const searchValue = searchInput.value.trim();
-                        const tags = searchValue.split(',').filter(tag => tag.trim() !== '');
-                        const tagCount = tags.length;
-
-                        // 按当前来源/去重模式的实际 tag 配额给提示，避免静默截断
-                        const _src = uiSettings.source_site || "danbooru";
-                        const _dedup = uiSettings.gelbooru_dedup_mode || "off";
-                        if (_src === "gelbooru" && _dedup === "on" && tagCount > 1) {
-                            showTagHint('开启去重时仅支持 1 个 tag（游标占用名额），其余 tag 将被忽略；如需多 tag 请配置密钥后选“开启·已配密钥”', false);
-                        } else if (tagCount > 2) {
-                            showTagHint('搜索只考虑前两个tag，第三个及后续tag将被忽略', false);
-                        } else {
-                            clearTagHint();
-                        }
-
                         let apiFormattedTags = convertTagsToApiFormat(searchValue);
 
                         // 添加日期筛选
@@ -3338,10 +3324,60 @@ app.registerExtension({
                             return;
                         }
 
+                        // 词条截断提示：只在后端确认“确实丢弃了词条”时显示（含站点降级、缓存命中），
+                        // 常驻在搜索框下方，翻页/自动补货不重复触发；没有截断就清掉。
+                        if (reset) {
+                            const tagNoticeHeader = response.headers.get("X-Gallery-Tag-Notice");
+                            let truncationMessage = "";
+                            if (tagNoticeHeader) {
+                                try {
+                                    const tagNotice = JSON.parse(decodeURIComponent(tagNoticeHeader));
+                                    const droppedTags = Array.isArray(tagNotice?.dropped) ? tagNotice.dropped : [];
+                                    if (tagNotice?.truncated && droppedTags.length > 0) {
+                                        const droppedCount = Number(tagNotice.dropped_count) || droppedTags.length;
+                                        const totalCount = Number(tagNotice.total) || (Number(tagNotice.limit) + droppedCount);
+                                        let shownTags = droppedTags.join(', ');
+                                        if (droppedCount > droppedTags.length) {
+                                            let moreTemplate = t('tagsTruncatedMore');
+                                            if (typeof moreTemplate !== 'string' || !moreTemplate.includes('{count}')) {
+                                                moreTemplate = '{tags} …（共 {count} 个）';
+                                            }
+                                            shownTags = moreTemplate
+                                                .replace('{tags}', shownTags)
+                                                .replace('{count}', String(droppedCount));
+                                        }
+                                        let noticeText = t('tagsTruncated');
+                                        if (typeof noticeText !== 'string' || !noticeText.includes('{limit}')) {
+                                            noticeText = '搜索词最多 {limit} 个（本次 {total} 个），已忽略：{tags}';
+                                        }
+                                        truncationMessage = noticeText
+                                            .replace('{limit}', String(tagNotice.limit))
+                                            .replace('{total}', String(totalCount))
+                                            .replace('{tags}', shownTags);
+                                    }
+                                } catch (noticeErr) {
+                                    logger.debug(`[fetchAndRender] 截断提示解析失败: ${noticeErr?.message || noticeErr}`);
+                                }
+                            }
+                            if (truncationMessage) {
+                                showTagHint(truncationMessage, true); // 常驻，直到下次搜索
+                            } else {
+                                clearTagHint();
+                            }
+                        }
+
                         // 先分离 error 占位格与正常 post
                         const errorPosts = newPosts.filter(p => p && p.error);
                         const normalRaw = newPosts.filter(p => !p || !p.error);
                         logger.info(`[fetchAndRender] 解析结果: total=${newPosts.length} error=${errorPosts.length} normalRaw=${normalRaw.length}`);
+
+                        // 整页都是错误占位（422 词条超限 / 401 认证失败 / 429 限流等）：
+                        // 立即停止自动补货。否则 finally 的 maybeLoadMore 和 2s 轮询会反复重发
+                        // 同一个必然失败的请求，表现成“无限重试、一直报错”。
+                        if (errorPosts.length > 0 && normalRaw.length === 0) {
+                            endOfResults = true;
+                            logger.warn(`[fetchAndRender] 本页只有错误占位，停止自动加载以避免无限重试 (status=${response.status})`);
+                        }
 
                         // 先去重（仅 cursor/pid 模式，G站 dedup=off 纯翻页不过滤）
                         const isGelbooruDedupOff = src === "gelbooru" && dedup === "off";
