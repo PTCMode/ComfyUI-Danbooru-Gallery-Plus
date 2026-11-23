@@ -204,7 +204,7 @@ app.registerExtension({ name: "Comfy.DanbooruGallery", ... });
 | i18n | `t()`、`registerTranslations` | 所有用户可见文案走 `t()` |
 | 提示 | `showTagHint()` / `clearTagHint()`、`showToast()` | 搜索框下方常驻提示 + 右上角 toast |
 | 搜索/翻页 | `fetchAndRender(reset, startPageOverride)` | 核心循环，见 4.3 |
-| 卡片与 tooltip | `renderPost()`、`renderErrorCell()`、`globalTooltip` | 瀑布流布局、悬浮详情、编辑面板 |
+| 卡片与 tooltip | `renderPost()`、`renderErrorCell()`、`globalTooltip` | 瀑布流布局、悬浮详情、编辑面板；卡片悬浮按钮：本地查看图片 / 打开图片页（`buildPostPageHref`）/ 编辑 / 下载 / 收藏 |
 | 收藏 | `addToFavorites` / `removeFromFavorites` / `loadFavorites` | 走 3.8 的收藏接口 |
 | 设置面板 | `showSettingsDialog()` | 用户认证、提示词过滤、UI、日志、预加载、`max_search_tags` |
 | 入队准备 | `galleryQueuePreparers`、`/selection_snapshot` | Gelbooru 先补详情，再写快照与 hidden widget |

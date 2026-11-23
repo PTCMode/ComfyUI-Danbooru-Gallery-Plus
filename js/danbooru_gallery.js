@@ -664,6 +664,19 @@ app.registerExtension({
                     return `https://danbooru.donmai.us/wiki_pages/${encodeURIComponent(apiTag)}`;
                 };
 
+                // ===== 帖子详情页 =====
+                // 悬浮按钮「打开图片页」：直接跳到该帖子的站点页面。
+                // Danbooru: /posts/<id>；Gelbooru: index.php?page=post&s=view&id=<id>
+                const buildPostPageHref = (post, sourceOverride = null) => {
+                    const postId = String(post?.id ?? "").trim();
+                    if (!/^\d+$/.test(postId)) return "";
+                    const site = (post?.source_site || sourceOverride || currentSource()).toLowerCase();
+                    if (site === "gelbooru") {
+                        return `https://gelbooru.com/index.php?page=post&s=view&id=${encodeURIComponent(postId)}`;
+                    }
+                    return `https://danbooru.donmai.us/posts/${encodeURIComponent(postId)}`;
+                };
+
                 const openExternalUrl = (url) => {
                     if (!url) return;
                     window.open(url, "_blank", "noopener,noreferrer");
@@ -4759,7 +4772,23 @@ app.registerExtension({
                         }
                     });
 
+                    // 「打开图片页」：直接打开该帖子的站点页面（Danbooru /posts/<id>）
+                    const openPostPageButton = $el("button.danbooru-open-post-button", {
+                        innerHTML: `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>`,
+                        title: t('openPostPage'),
+                        onclick: (e) => {
+                            e.stopPropagation();
+                            const href = buildPostPageHref(post);
+                            if (!href) {
+                                showToast(t('openPostPageFailed'), 'warning', wrapper);
+                                return;
+                            }
+                            openExternalUrl(href);
+                        }
+                    });
+
                     buttonsContainer.appendChild(viewImageButton);
+                    buttonsContainer.appendChild(openPostPageButton);
                     buttonsContainer.appendChild(editButton);
                     buttonsContainer.appendChild(downloadButton);
                     buttonsContainer.appendChild(favoriteButton);

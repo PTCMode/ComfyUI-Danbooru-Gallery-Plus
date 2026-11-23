@@ -3,6 +3,14 @@
 本文件记录 **ComfyUI Danbooru Gallery Plus** 的版本变化。
 更早的历史来自上游项目 [ComfyUI-Danbooru-Gallery](https://github.com/Aaalice233/ComfyUI-Danbooru-Gallery)。
 
+## v1.0.2 — 2026-11-24
+
+### 新增
+
+- **「打开图片页」按钮**：图片悬浮按钮里，「本地查看图片」右侧新增一个按钮，点击直接打开该帖的
+  站点页面（Danbooru `https://danbooru.donmai.us/posts/<id>`，Gelbooru 对应的 `s=view` 详情页）；
+  原来的「查看大图」提示文案改为「本地查看图片」。
+
 ## v1.0.1 — 2026-11-16
 
 ### 新增
